@@ -1,0 +1,135 @@
+# This file is for creating RAG for Providence work
+# Source code from video: A gentle introduction to RAG (using open-source models) Underfitted
+# Link to the source code github repo https://github.com/svpino/gentle-intro-to-rag
+
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+
+PDF_FILE = "IMM.pdf"
+
+MODEL = "llama3.2"
+
+from langchain_community.document_loaders import PyPDFLoader
+
+loader = PyPDFLoader(PDF_FILE)
+pages = loader.load()
+
+print(f"Number of pages: {len(pages)}")
+print(f"Length of pages: {len(pages[1].page_content)}")
+print("Content of pages:", pages[0].page_content)
+
+# Chunking
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=100)
+
+chunks = splitter.split_documents(pages)
+print(f"Number of chunks: {len(chunks)}")
+print(f"Length of a chunk: {len(chunks[1].page_content)}")
+print(f"Content of a chunk:", chunks[1].page_content)
+
+
+# Storing the chunks in vector store
+from langchain_community.vectorstores import FAISS
+from langchain_ollama import OllamaEmbeddings
+embeddings = OllamaEmbeddings(model=MODEL)
+#vectorstore = FAISS.from_documents(chunks, embeddings)
+import os
+
+VECTOR_DB_PATH = "faiss_index"
+
+print("Starting the vectorstore creation/loading process")
+
+if os.path.exists(VECTOR_DB_PATH):
+    print("Loading FAISS index from the disk")
+    vectorstore = FAISS.load_local(VECTOR_DB_PATH, embeddings,  allow_dangerous_deserialization=True)
+else:
+    print("Creating FAISS index and saving to the disk")
+    chunks = splitter.split_documents(pages)
+    vectorstore = FAISS.from_documents(chunks, embeddings)
+    vectorstore.save_local(VECTOR_DB_PATH)
+
+
+# Setting up a retriever 
+# We can use a retriever to find chunks in the vector store that are similar to a supplied question
+
+retriever = vectorstore.as_retriever()
+retriever.invoke("What if I miss the deadline?")
+
+# Configuring the Model
+# We will use Ollama to load the local model in memory. After creating the model, we can invoke the model with a question and get the response back
+from langchain_ollama import ChatOllama
+
+model = ChatOllama(model=MODEL, temperature=0)
+model.invoke("Who is the president of the United States?")
+
+# Parsing the model's response
+# The response from the model is an AIMesssage instance containing the answer. We can extract the text answer by using the appropriate output parser.
+# We can connect the model and a parser using a chain
+
+from langchain_core.output_parsers import StrOutputParser
+
+parser = StrOutputParser()
+chain = model | parser
+print(chain.invoke("Who is the president of the United States?"))
+
+# Setting up a prompt
+# In addition to the questions we want to ask, we also want to provide the model with the context of the PDF file. 
+# We can use a prompt template to define and reuse the prompt we will use with the model
+
+from langchain.prompts import PromptTemplate
+
+template = """
+You are an assistant that provides answers to questions based on a given context.
+
+Answer the question based on the context. If you can't answer the question, reply "I don't know".
+
+Be as concise as possible and go straight to the point.
+
+Context: {context}
+
+Question: {question}
+"""
+
+prompt = PromptTemplate.from_template(template)
+print(prompt.format(context="Here is some context", question="Here is a question"))
+
+# Adding the prompt to the chain
+# We can now chain the prompt with the model and the parser
+
+chain = prompt | model | parser
+chain.invoke(
+    {"context": "If you have original Medicare call 1-888-305-6759",
+     "question": "What number do ypu call if you have original medicare?"
+    })
+
+
+# Adding the retriver to the chain
+# Finally we can connect the retriever to the chain and get the context from the vector store
+
+from operator import itemgetter
+
+chain = (
+    {
+        "context": itemgetter("question") | retriever,
+        "question": itemgetter("question"),
+    }
+    | prompt
+    | model
+    | parser
+)
+
+questions = [
+    #"What happens if I do not appeal?",
+    #"What number do I call, if I have concerns about the quality of my care",
+    #"Who do I call if I have providence medicare"
+    #"Tell me Providence hospital address"
+    #"What is Acentra Health"
+    "Who do I report to with concerns about my quality of care",
+    "Tell me Providence hospital address from my PDF"
+]
+
+for question in questions:
+    print(f"Question: {question}")
+    print(f"Answer: {chain.invoke({'question':question})}")
+    print("************************")
