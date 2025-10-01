@@ -132,4 +132,5 @@ questions = [
 for question in questions:
     print(f"Question: {question}")
     print(f"Answer: {chain.invoke({'question':question})}")
+
     print("************************")
